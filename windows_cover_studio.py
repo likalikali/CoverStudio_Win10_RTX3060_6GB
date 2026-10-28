@@ -275,6 +275,91 @@ def patch_midi_export_fix() -> None:
             say("✓ 已应用 PianoTokenizer MIDI 导出非负时间保护补丁")
 
 
+def patch_web_midi_player() -> None:
+    """Fix frontend MIDI silence: instant multi-harmonic piano synth while loading + dual-CDN fast sample loading."""
+    static_dir = COVER / "cover_studio" / "static" / "assets"
+    if not static_dir.is_dir():
+        try:
+            from urllib.request import urlopen
+            # Ensure web bundle is downloaded if missing
+            if COVER_PY.is_file():
+                capture([str(COVER_PY), "-m", "cover_studio.web"], cwd=COVER)
+        except Exception:
+            pass
+    if not static_dir.is_dir():
+        return
+
+    bt = "`"
+    old_mr = (
+        f"function Mr(e,t,n){{return Gn(this,null,function*(){{t=t.replace(/#/g,{bt}%23{bt}).replace(/ /g,{bt}%20{bt}).replace(/([^:]\\/)\\/+/g,{bt}$1{bt});"
+        f"let r=yield n.fetch(t);if(r.status!==200){{console.warn({bt}Error loading buffer. Invalid status: {bt},r.status,t);return}}"
+        f"try{{let t=yield r.arrayBuffer();return yield e.decodeAudioData(t)}}catch(e){{console.warn({bt}Error loading buffer{bt},e,t)}}}})}}"
+    )
+    new_mr = (
+        f"function Mr(e,t,n){{return Gn(this,null,function*(){{t=t.replace(/#/g,{bt}%23{bt}).replace(/ /g,{bt}%20{bt}).replace(/([^:]\\/)\\/+/g,{bt}$1{bt});"
+        f"let u=t.replace({bt}https://smpldsnds.github.io/sfzinstruments-splendid-grand-piano/samples{bt},{bt}https://cdn.jsdelivr.net/gh/smpldsnds/sfzinstruments-splendid-grand-piano@master/samples{bt}),r;"
+        f"for(let s of[u,t]){{let c=new AbortController,i=setTimeout(()=>c.abort(),8e3);try{{let o=yield fetch(s,{{signal:c.signal}});if(o&&o.status===200){{r=o;break}}}}catch{{}}finally{{clearTimeout(i)}}}}"
+        f"if(!r||r.status!==200){{console.warn({bt}Error loading buffer: {bt},t);return}}"
+        f"try{{let t=yield r.arrayBuffer();return yield e.decodeAudioData(t)}}catch(e){{console.warn({bt}Error loading buffer{bt},e,t)}}}})}}"
+    )
+
+    old_load = (
+        f"loadPiano(){{try{{let e=ma(this.ctx,{{destination:this.coverGain,storage:new er({bt}cover-studio-piano{bt}),"
+        f"onLoadProgress:e=>{{this.pianoProgress=e.total?e.loaded/e.total:0,this.emit()}}}});"
+    )
+    new_load = (
+        f"loadPiano(){{try{{let e=ma(this.ctx,{{destination:this.coverGain,storage:new er({bt}cover-studio-piano-v2{bt}),"
+        f"notesToLoad:{{notes:[23,29,35,40,45,50,55,60,65,71,76,81,86,91,96,102,108],velocityRange:[41,100]}},"
+        f"onLoadProgress:e=>{{this.pianoProgress=e.total?e.loaded/e.total:0,this.emit()}}}});"
+    )
+
+    old_play = (
+        f"playNote(e,t){{let n=Math.max(.05,e[4]-e[0]);if(this.piano&&this.pianoState==={bt}ready{bt}){{this.piano.start({{note:e[2],velocity:e[3],time:t,duration:n}});return}}"
+        f"if(this.pianoState==={bt}loading{bt})return;let r=this.ctx.createOscillator(),i=this.ctx.createGain();r.type={bt}triangle{bt},r.frequency.value=440*2**((e[2]-69)/12);"
+        f"let a=.12*(e[3]/127)**1.5;i.gain.setValueAtTime(0,t),i.gain.linearRampToValueAtTime(a,t+.005),i.gain.setTargetAtTime(0,t+.005,.6),i.gain.setTargetAtTime(0,t+n,.08),"
+        f"r.connect(i).connect(this.coverGain),r.start(t),r.stop(t+n+.5),this.fallbackVoices.add(r),r.onended=()=>this.fallbackVoices.delete(r)}}"
+    )
+    new_play = (
+        f"playNote(e,t){{let n=Math.max(.05,e[4]-e[0]);if(this.piano&&this.pianoState==={bt}ready{bt}&&this.piano.loadProgress.loaded>0){{this.piano.start({{note:e[2],velocity:e[3],time:t,duration:n}});return}}"
+        f"let f=440*2**((e[2]-69)/12),a=.36*(Math.max(1,e[3])/127)**1.15,i=this.ctx.createGain();i.gain.setValueAtTime(1e-4,t),i.gain.linearRampToValueAtTime(a,t+.004),"
+        f"i.gain.setTargetAtTime(a*.25,t+.004,.22),i.gain.setTargetAtTime(1e-4,t+n,.07),i.connect(this.coverGain);"
+        f"for(let[m,g,tp]of[[1,1,{bt}triangle{bt}],[2,.35,{bt}sine{bt}],[3,.12,{bt}sine{bt}]]){{if(f*m>=this.ctx.sampleRate*.45)continue;"
+        f"let r=this.ctx.createOscillator(),gn=this.ctx.createGain();r.type=tp,r.frequency.value=f*m,gn.gain.value=g,r.connect(gn).connect(i),"
+        f"r.start(t),r.stop(t+n+.45),this.fallbackVoices.add(r),r.onended=()=>this.fallbackVoices.delete(r)}}}}"
+    )
+
+    old_studio = f"(0,p.useEffect)(()=>{{de.data?a.setNotes(de.data.notes):E&&E.state!=={bt}done{bt}&&a.setNotes([])}},[de.data,E?.state,a])"
+    new_studio = (
+        f"(0,p.useEffect)(()=>{{de.data?a.setNotes(de.data.notes):!E&&c.data?.notes?a.setNotes(c.data.notes.map(e=>[e[0],e[1],e[2],e[3],e[0]+e[1]])):"
+        f"E&&E.state!=={bt}done{bt}&&a.setNotes([])}},[de.data,E,c.data,a])"
+    )
+
+    for js_file in static_dir.glob("index-*.js"):
+        text = js_file.read_text(encoding="utf-8")
+        updated = text
+        if old_mr in updated:
+            updated = updated.replace(old_mr, new_mr, 1)
+        if old_load in updated:
+            updated = updated.replace(old_load, new_load, 1)
+        if old_play in updated:
+            updated = updated.replace(old_play, new_play, 1)
+        if old_studio in updated:
+            updated = updated.replace(old_studio, new_studio, 1)
+        if updated != text:
+            js_file.write_text(updated, encoding="utf-8")
+            say(f"✓ 已应用前端 MIDI 钢琴音源加速与泛音合成器补丁 ({js_file.name})")
+        elif "cover-studio-piano-v2" in text:
+            say("✓ 前端 MIDI 钢琴音源补丁已就绪")
+
+    app_py = COVER / "cover_studio" / "app.py"
+    if app_py.is_file():
+        app_text = app_py.read_text(encoding="utf-8")
+        old_resp = "        if path and file.is_file() and file.is_relative_to(STATIC_DIR.resolve()):\n            return FileResponse(file)"
+        new_resp = '        if path and file.is_file() and file.is_relative_to(STATIC_DIR.resolve()):\n            return FileResponse(file, headers={"Cache-Control": "no-cache"})'
+        if old_resp in app_text:
+            app_py.write_text(app_text.replace(old_resp, new_resp, 1), encoding="utf-8")
+
+
 def is_shared_ffmpeg(path: Path) -> bool:
     """Require a complete FFmpeg shared installation (avoiding partial DLLs like scrcpy)."""
     try:
@@ -604,6 +689,7 @@ def install() -> None:
     patch_worker_batch_size()
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
+    patch_web_midi_player()
     ffmpeg = ffmpeg_shared_bin()
     if ffmpeg:
         say(f"✓ 检测到可用 FFmpeg Shared DLL：{ffmpeg}")
@@ -640,6 +726,7 @@ def start(mode: str) -> None:
     patch_worker_batch_size()
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
+    patch_web_midi_player()
 
     if not nvidia_report():
         raise RuntimeError("未检测到 NVIDIA GPU，请检查显卡驱动。")
@@ -752,6 +839,7 @@ def check() -> None:
     check_pytorch(TSUMUGI_PY, "tsumugi")
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
+    patch_web_midi_player()
     ffmpeg = ffmpeg_shared_bin()
     say(f"FFmpeg Shared: {ffmpeg or '未找到 (请通过 03_toolbox.bat 执行 FFmpeg 修复)'}")
     if ffmpeg:
