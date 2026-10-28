@@ -1,0 +1,35 @@
+# Cloned upstream repositories & virtual environments (auto-created by 01_install.bat)
+tsumugi-piano-cover/
+
+# Local runtime data, projects, and exported MIDIs/audio
+data/
+
+# Hugging Face model weights cache (~3-4 GB)
+cache/
+
+# Runtime logs
+logs/
+*.log
+
+# Local user performance profile
+.cover_batch_size
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE & assistant folders
+.workbuddy/
+.vscode/
+.idea/
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
