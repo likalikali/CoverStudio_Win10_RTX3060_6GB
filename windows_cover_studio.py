@@ -360,6 +360,94 @@ def patch_web_midi_player() -> None:
             app_py.write_text(app_text.replace(old_resp, new_resp, 1), encoding="utf-8")
 
 
+def patch_offline_cache_and_queue_fix() -> None:
+    """Make Hugging Face model resolution prefer local cache first (0ms offline hit) and mark Take running immediately."""
+    hub_py = COVER / "piano_ar" / "hub.py"
+    if hub_py.is_file():
+        text = hub_py.read_text(encoding="utf-8")
+        old_hub = (
+            "    from huggingface_hub import snapshot_download\n\n"
+            "    _count_download(str(name_or_path), revision)\n"
+            '    patterns = [f"{subfolder}/*"] if subfolder else None\n'
+            "    root = Path(snapshot_download(str(name_or_path), revision=revision, allow_patterns=patterns))"
+        )
+        new_hub = (
+            "    from huggingface_hub import snapshot_download\n\n"
+            '    patterns = [f"{subfolder}/*"] if subfolder else None\n'
+            "    try:\n"
+            "        root = Path(snapshot_download(str(name_or_path), revision=revision, allow_patterns=patterns, local_files_only=True))\n"
+            "        path = root / subfolder if subfolder else root\n"
+            "        if (path / CONFIG_NAME).is_file():\n"
+            "            return path\n"
+            "    except Exception:\n"
+            "        pass\n\n"
+            "    _count_download(str(name_or_path), revision)\n"
+            "    root = Path(snapshot_download(str(name_or_path), revision=revision, allow_patterns=patterns))"
+        )
+        if old_hub in text and "local_files_only=True" not in text:
+            hub_py.write_text(text.replace(old_hub, new_hub, 1), encoding="utf-8")
+            say("✓ 已应用 CoverModel 本地缓存优先加载补丁 (防 HuggingFace 联网卡顿)")
+
+    ss_pipeline = COVER / ".venv" / "Lib" / "site-packages" / "sheetsage2_refined" / "pipeline.py"
+    if ss_pipeline.is_file():
+        text = ss_pipeline.read_text(encoding="utf-8")
+        old_ss = (
+            "    from huggingface_hub import hf_hub_download, snapshot_download\n\n"
+            '    config = json.loads(Path(hf_hub_download(str(model), "config.json", revision=revision)).read_text(encoding="utf-8"))\n'
+            '    return Path(snapshot_download(str(model), revision=revision, allow_patterns=["config.json", *files(config)]))'
+        )
+        new_ss = (
+            "    from huggingface_hub import hf_hub_download, snapshot_download\n\n"
+            "    try:\n"
+            '        cfg_file = Path(hf_hub_download(str(model), "config.json", revision=revision, local_files_only=True))\n'
+            '        config = json.loads(cfg_file.read_text(encoding="utf-8"))\n'
+            "        return Path(\n"
+            "            snapshot_download(\n"
+            "                str(model),\n"
+            "                revision=revision,\n"
+            '                allow_patterns=["config.json", *files(config)],\n'
+            "                local_files_only=True,\n"
+            "            )\n"
+            "        )\n"
+            "    except Exception:\n"
+            "        pass\n\n"
+            '    config = json.loads(Path(hf_hub_download(str(model), "config.json", revision=revision)).read_text(encoding="utf-8"))\n'
+            '    return Path(snapshot_download(str(model), revision=revision, allow_patterns=["config.json", *files(config)]))'
+        )
+        if old_ss in text and "local_files_only=True" not in text:
+            ss_pipeline.write_text(text.replace(old_ss, new_ss, 1), encoding="utf-8")
+            say("✓ 已应用 SheetSage2 本地缓存优先加载补丁 (0ms 离线命中)")
+
+    engine_py = COVER / "cover_studio" / "engine.py"
+    if engine_py.is_file():
+        text = engine_py.read_text(encoding="utf-8")
+        old_q = "        with self._lock:\n            first = project.take(take_ids[0])"
+        new_q = (
+            "        with self._lock:\n"
+            "            for take_id in take_ids:\n"
+            '                project.update_take(take_id, state="running")\n'
+            "            first = project.take(take_ids[0])"
+        )
+        if old_q in text:
+            text = text.replace(
+                "            for take_id in take_ids:\n                project.update_take(take_id, state=\"running\")\n\n",
+                "",
+                1,
+            )
+            text = text.replace(old_q, new_q, 1)
+            engine_py.write_text(text, encoding="utf-8")
+            say("✓ 已应用 Take 状态即时切换补丁 (消除前端 queued 假死)")
+        elif 'for take_id in take_ids:\n                project.update_take(take_id, state="running")\n            first = project.take(take_ids[0])' in text:
+            say("✓ 本地缓存优先与单次 MERT 特征提取补丁已就绪")
+
+    if HF_CACHE.is_dir():
+        for inc in HF_CACHE.rglob("*.incomplete"):
+            try:
+                inc.unlink()
+            except OSError:
+                pass
+
+
 def is_shared_ffmpeg(path: Path) -> bool:
     """Require a complete FFmpeg shared installation (avoiding partial DLLs like scrcpy)."""
     try:
@@ -690,6 +778,7 @@ def install() -> None:
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
     patch_web_midi_player()
+    patch_offline_cache_and_queue_fix()
     ffmpeg = ffmpeg_shared_bin()
     if ffmpeg:
         say(f"✓ 检测到可用 FFmpeg Shared DLL：{ffmpeg}")
@@ -727,6 +816,7 @@ def start(mode: str) -> None:
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
     patch_web_midi_player()
+    patch_offline_cache_and_queue_fix()
 
     if not nvidia_report():
         raise RuntimeError("未检测到 NVIDIA GPU，请检查显卡驱动。")
@@ -840,6 +930,7 @@ def check() -> None:
     patch_worker_ffmpeg_handle()
     patch_midi_export_fix()
     patch_web_midi_player()
+    patch_offline_cache_and_queue_fix()
     ffmpeg = ffmpeg_shared_bin()
     say(f"FFmpeg Shared: {ffmpeg or '未找到 (请通过 03_toolbox.bat 执行 FFmpeg 修复)'}")
     if ffmpeg:
