@@ -447,6 +447,21 @@ def patch_offline_cache_and_queue_fix() -> None:
             except OSError:
                 pass
 
+    if WORKER.is_file():
+        w_text = WORKER.read_text(encoding="utf-8")
+        old_w = "        result = infer_stem.run_stem_separated_transcription(\n            audio,\n            output_root=work,\n            refine_instruments=True,"
+        new_w = "        result = infer_stem.run_stem_separated_transcription(\n            audio,\n            output_root=work,\n            low_vram_mode=True,\n            refine_instruments=True,"
+        if old_w in w_text and "low_vram_mode=True" not in w_text:
+            WORKER.write_text(w_text.replace(old_w, new_w, 1), encoding="utf-8")
+            say("✓ 已启用转录 low_vram_mode=True (防止 6GB 显存溢出导致丢失调号/和弦)")
+
+    app_py = COVER / "cover_studio" / "app.py"
+    if app_py.is_file():
+        a_text = app_py.read_text(encoding="utf-8")
+        if '"top_p": 1.0' in a_text:
+            app_py.write_text(a_text.replace('"top_p": 1.0', '"top_p": 0.92', 1), encoding="utf-8")
+            say("✓ 已优化生成默认核采样阈值 top_p=0.92 (过滤尾部离调噪音 token)")
+
 
 def is_shared_ffmpeg(path: Path) -> bool:
     """Require a complete FFmpeg shared installation (avoiding partial DLLs like scrcpy)."""
