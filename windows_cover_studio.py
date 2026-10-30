@@ -295,10 +295,17 @@ def patch_web_midi_player() -> None:
         f"let r=yield n.fetch(t);if(r.status!==200){{console.warn({bt}Error loading buffer. Invalid status: {bt},r.status,t);return}}"
         f"try{{let t=yield r.arrayBuffer();return yield e.decodeAudioData(t)}}catch(e){{console.warn({bt}Error loading buffer{bt},e,t)}}}})}}"
     )
-    new_mr = (
+    bad_mr = (
         f"function Mr(e,t,n){{return Gn(this,null,function*(){{t=t.replace(/#/g,{bt}%23{bt}).replace(/ /g,{bt}%20{bt}).replace(/([^:]\\/)\\/+/g,{bt}$1{bt});"
         f"let u=t.replace({bt}https://smpldsnds.github.io/sfzinstruments-splendid-grand-piano/samples{bt},{bt}https://cdn.jsdelivr.net/gh/smpldsnds/sfzinstruments-splendid-grand-piano@master/samples{bt}),r;"
         f"for(let s of[u,t]){{let c=new AbortController,i=setTimeout(()=>c.abort(),8e3);try{{let o=yield fetch(s,{{signal:c.signal}});if(o&&o.status===200){{r=o;break}}}}catch{{}}finally{{clearTimeout(i)}}}}"
+        f"if(!r||r.status!==200){{console.warn({bt}Error loading buffer: {bt},t);return}}"
+        f"try{{let t=yield r.arrayBuffer();return yield e.decodeAudioData(t)}}catch(e){{console.warn({bt}Error loading buffer{bt},e,t)}}}})}}"
+    )
+    new_mr = (
+        f"function Mr(e,t,n){{return Gn(this,null,function*(){{t=t.replace(/#/g,{bt}%23{bt}).replace(/ /g,{bt}%20{bt}).replace(/([^:]\\/)\\/+/g,{bt}$1{bt});"
+        f"let u=t.replace({bt}https://smpldsnds.github.io/sfzinstruments-splendid-grand-piano/samples{bt},{bt}https://cdn.jsdelivr.net/gh/smpldsnds/sfzinstruments-splendid-grand-piano@master/samples{bt}),r;"
+        f"for(let s of[u,t]){{try{{let o=yield n.fetch(s);if(o&&o.status===200){{r=o;break}}}}catch{{}}}}"
         f"if(!r||r.status!==200){{console.warn({bt}Error loading buffer: {bt},t);return}}"
         f"try{{let t=yield r.arrayBuffer();return yield e.decodeAudioData(t)}}catch(e){{console.warn({bt}Error loading buffer{bt},e,t)}}}})}}"
     )
@@ -307,9 +314,13 @@ def patch_web_midi_player() -> None:
         f"loadPiano(){{try{{let e=ma(this.ctx,{{destination:this.coverGain,storage:new er({bt}cover-studio-piano{bt}),"
         f"onLoadProgress:e=>{{this.pianoProgress=e.total?e.loaded/e.total:0,this.emit()}}}});"
     )
-    new_load = (
+    bad_load = (
         f"loadPiano(){{try{{let e=ma(this.ctx,{{destination:this.coverGain,storage:new er({bt}cover-studio-piano-v2{bt}),"
         f"notesToLoad:{{notes:[23,29,35,40,45,50,55,60,65,71,76,81,86,91,96,102,108],velocityRange:[41,100]}},"
+        f"onLoadProgress:e=>{{this.pianoProgress=e.total?e.loaded/e.total:0,this.emit()}}}});"
+    )
+    new_load = (
+        f"loadPiano(){{try{{let e=ma(this.ctx,{{destination:this.coverGain,storage:new er({bt}cover-studio-piano-full{bt}),"
         f"onLoadProgress:e=>{{this.pianoProgress=e.total?e.loaded/e.total:0,this.emit()}}}});"
     )
 
@@ -337,9 +348,13 @@ def patch_web_midi_player() -> None:
     for js_file in static_dir.glob("index-*.js"):
         text = js_file.read_text(encoding="utf-8")
         updated = text
-        if old_mr in updated:
+        if bad_mr in updated:
+            updated = updated.replace(bad_mr, new_mr, 1)
+        elif old_mr in updated:
             updated = updated.replace(old_mr, new_mr, 1)
-        if old_load in updated:
+        if bad_load in updated:
+            updated = updated.replace(bad_load, new_load, 1)
+        elif old_load in updated:
             updated = updated.replace(old_load, new_load, 1)
         if old_play in updated:
             updated = updated.replace(old_play, new_play, 1)
@@ -347,9 +362,9 @@ def patch_web_midi_player() -> None:
             updated = updated.replace(old_studio, new_studio, 1)
         if updated != text:
             js_file.write_text(updated, encoding="utf-8")
-            say(f"✓ 已应用前端 MIDI 钢琴音源加速与泛音合成器补丁 ({js_file.name})")
-        elif "cover-studio-piano-v2" in text:
-            say("✓ 前端 MIDI 钢琴音源补丁已就绪")
+            say(f"✓ 已修复前端全 241 采样全力度 (1~127) 钢琴音源加载补丁 ({js_file.name})")
+        elif "cover-studio-piano-full" in text:
+            say("✓ 前端全采样 MIDI 钢琴音源补丁已就绪")
 
     app_py = COVER / "cover_studio" / "app.py"
     if app_py.is_file():
@@ -446,21 +461,6 @@ def patch_offline_cache_and_queue_fix() -> None:
                 inc.unlink()
             except OSError:
                 pass
-
-    if WORKER.is_file():
-        w_text = WORKER.read_text(encoding="utf-8")
-        old_w = "        result = infer_stem.run_stem_separated_transcription(\n            audio,\n            output_root=work,\n            refine_instruments=True,"
-        new_w = "        result = infer_stem.run_stem_separated_transcription(\n            audio,\n            output_root=work,\n            low_vram_mode=True,\n            refine_instruments=True,"
-        if old_w in w_text and "low_vram_mode=True" not in w_text:
-            WORKER.write_text(w_text.replace(old_w, new_w, 1), encoding="utf-8")
-            say("✓ 已启用转录 low_vram_mode=True (防止 6GB 显存溢出导致丢失调号/和弦)")
-
-    app_py = COVER / "cover_studio" / "app.py"
-    if app_py.is_file():
-        a_text = app_py.read_text(encoding="utf-8")
-        if '"top_p": 1.0' in a_text:
-            app_py.write_text(a_text.replace('"top_p": 1.0', '"top_p": 0.92', 1), encoding="utf-8")
-            say("✓ 已优化生成默认核采样阈值 top_p=0.92 (过滤尾部离调噪音 token)")
 
 
 def is_shared_ffmpeg(path: Path) -> bool:
